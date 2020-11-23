@@ -1,13 +1,13 @@
 from tqdm import tqdm
 from math import log
-from multiprocessing import Pool
+from multiprocessing import Pool, cpu_count
 from sys import argv
 import numpy as np
 
 import os
 
 
-NUM_TOPIC = 8
+NUM_TOPIC = 4
 
 
 data_dir = '../ntust-ir-2020_hw4_v2'
@@ -155,14 +155,22 @@ def init_prob(size):
     return random_array / summ
 pass
 
-def compute_e(p_tk_wi, p_dj_tk):
-    p_dj_wi_tk = np.zeros([num_doc, num_term, NUM_TOPIC])
+def _compute_e(args):
+    p_tk_wi, p_dj_tk, step, j = args
+    p___wi_tk = np.zeros([num_term, NUM_TOPIC])
+    for i in range (num_term):
+        for k in range(NUM_TOPIC):
+            p___wi_tk[i, k] = p_tk_wi[k][i] * p_dj_tk[j][k]
+        pass
+    pass
+pass
+
+def compute_e(p_tk_wi, p_dj_tk, step):
+    # p_dj_wi_tk = np.zeros([num_doc, num_term, NUM_TOPIC], dtype="float16")
     print("E step...")
-    for j in tqdm(range(num_doc)):
-        for i in range (num_term):
-            for k in range(NUM_TOPIC):
-                p_dj_wi_tk[j, i, k] = p_tk_wi[k][i] * p_dj_tk[j][k]
-                #  summ = sum([p_tk_wi[k][i] * p_dj_tk[j][k] for k in range(NUM_TOPIC)])
+    with Pool(cpu_count()) as p:
+        args = [[p_tk_wi, p_dj_tk, step, j] for j in range(num_doc)]
+        for _ in tqdm(p.imap_unordered(_compute_e, args), total=num_doc):
             pass
         pass
     pass
@@ -172,11 +180,10 @@ doc_filename_list, query_filename_list, doc_list, query_list = get_data(data_dir
 dic = get_dictionary(doc_list)
 num_doc = len(doc_list)
 num_term = len(dic)
-print(num_doc)
-print(num_term)
 p_tk_wi = np.array([init_prob(num_term) for i in range(NUM_TOPIC)])
 p_dj_tk = np.array([init_prob(NUM_TOPIC) for i in range(num_doc)])
-compute_e(p_tk_wi, p_dj_tk)
+print(cpu_count)
+compute_e(p_tk_wi, p_dj_tk, 1)
 
 #  avg_doc_len = compute_avg_len(doc_list)
 #  tf_doc = compute_tf(dic, doc_list)
