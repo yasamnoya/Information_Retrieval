@@ -2,12 +2,25 @@ from tqdm import tqdm
 from math import log
 from multiprocessing import Pool, cpu_count
 from sys import argv
+from datetime import datetime
+from scipy import sparse as sp
+
 import numpy as np
-
+import numba as nb
 import os
+import gc
 
 
-NUM_TOPIC = 4
+NUM_TOPIC = 8
+DTYPE = nb.float32
+
+alpha = float(argv[1])
+beta = float(argv[2])
+
+STEP = int(argv[3])
+EPOCH = int(argv[4])
+
+evaluate = int(argv[5])
 
 
 data_dir = '../ntust-ir-2020_hw4_v2'
@@ -51,13 +64,17 @@ def get_dictionary(dataset):
     print('Creating dictionary')
 
     dictionary = []
+    term_to_i = {}
     for doc in tqdm(dataset):
         dictionary += doc
     pass
-
+    
     dictionary = list(dict.fromkeys(dictionary))
+    for i, term in enumerate(dictionary):
+        term_to_i[term] = i
+    pass
 
-    return dictionary
+    return dictionary, term_to_i
 pass
 
 def compute_tf(dic, doc_list):
@@ -116,13 +133,34 @@ def conbine_id_and_score(id_list, score_list):
     return conbined
 pass
 
+def _compute_score(args):
+    query_i_list, j = args
+    summ = 0
+    for i in query_i_list:
+        term1 = np.log(alpha) + np.log(p_dj_wi[j, i])
+        term2 = np.log(beta) + np.log(sum([p_tk_wi[k, i] * p_dj_tk[j, k] for k in range(NUM_TOPIC)]))
+        term3 = np.log(1-alpha-beta) + np.log(p_bg_wi[i])
+        summ += np.logaddexp(term1, np.logaddexp(term2, term3))
+    pass
+    return summ
+pass
+
+def compute_score(q, query):
+    query_i_list = [term_to_i[term] for term in query if term in dic]
+    with Pool(cpu_count()) as p:
+        args = [[query_i_list, j] for j in range(num_doc)]
+        score_list = p.map(_compute_score, args)
+    pass
+    return score_list
+pass
+
 
 def compute_score_for_querys(query_list):
 
     result = []
     for q, query in tqdm(enumerate(query_list)):
         score_list = compute_score(q, query)
-        doc_score_list = conbine_id_and_list(doc_filename_list, score_list)
+        doc_score_list = conbine_id_and_score(doc_filename_list, score_list)
         doc_score_list.sort(key = lambda d: d['score'], reverse = True)
         sorted_doc_list = [doc['id'] for doc in doc_score_list]
         sorted_score_list = [doc['score'] for doc in doc_score_list]
@@ -150,45 +188,300 @@ def compute_idf(N, n_list):
 pass
 
 def init_prob(size):
-    random_array = np.random.randint(100, size=size)
+    random_array = np.random.randint(1, 10, size=size)
     summ = sum(random_array)
     return random_array / summ
 pass
 
-def _compute_e(args):
-    p_tk_wi, p_dj_tk, step, j = args
-    p___wi_tk = np.zeros([num_term, NUM_TOPIC])
-    for i in range (num_term):
-        for k in range(NUM_TOPIC):
-            p___wi_tk[i, k] = p_tk_wi[k][i] * p_dj_tk[j][k]
-        pass
+def compute_c():
+    global c_wi_dj
+    print("Counting c...", datetime.now().strftime("%H:%M:%S"))
+    with Pool(cpu_count()) as p:
+        args = [i for i in range(num_term)]
+        #  for _ in tqdm(p.imap_unordered(_compute_c, args), total=len(args)):
+            #  pass
+        #  pass
+        c_wi_dj = np.array(p.map(_compute_c, args))
     pass
+    np.save("../save/c", c_wi_dj)
 pass
 
-def compute_e(p_tk_wi, p_dj_tk, step):
-    # p_dj_wi_tk = np.zeros([num_doc, num_term, NUM_TOPIC], dtype="float16")
-    print("E step...")
-    with Pool(cpu_count()) as p:
-        args = [[p_tk_wi, p_dj_tk, step, j] for j in range(num_doc)]
-        for _ in tqdm(p.imap_unordered(_compute_e, args), total=num_doc):
+def _compute_c(i):
+    term = dic[i]
+    for j in range(num_doc):
+        c_wi_dj[i, j] = doc_list[j].count(term)
+    pass
+    return c_wi_dj[i].tolist()
+pass
+
+# @nb.jit(nopython=True)
+# def _compute_e(j):
+#     p___wi_tk = np.zeros((num_term, NUM_TOPIC), dtype=nb.float32)
+#     for i in range (num_term):
+#         for k in range(NUM_TOPIC):
+#             p___wi_tk[i, k] = p_tk_wi[k][i] * p_dj_tk[j][k]
+#             #  p_dj_wi_tk[j, i] = normalize(p_dj_wi_tk[j, i], 0)
+#             #  p_dj_wi_tk[j, i, k] = p_tk_wi[k][i] * p_dj_tk[j][k]
+# 
+#         pass
+#         p___wi_tk[i] /= np.sum(p___wi_tk[i])
+#         #  p_dj_wi_tk[j, i] /= sum(p_dj_wi_tk[j, i])
+#     pass
+#     return p___wi_tk
+# pass
+
+@nb.njit
+def _compute_e():
+    p_dj_wi_tk = np.zeros((num_doc, num_term, NUM_TOPIC), dtype=DTYPE)
+    for j in range(num_doc):
+        for i in range(num_term):
+            for k in range(NUM_TOPIC):
+                p_dj_wi_tk[j, i, k] = p_tk_wi[k][i] * p_dj_tk[j][k]
             pass
+        p_dj_wi_tk[j, i] /= np.sum(p_dj_wi_tk[j, i])
         pass
     pass
+    return p_dj_wi_tk
 pass
+
+def compute_e(step):
+    print("E step%d..." %step, datetime.now().strftime("%H:%M:%S"))
+    #  args = [j for j in range(num_doc)]
+    #  for _ in tqdm(p.imap_unordered(_compute_e, args), total=len(args)):
+        #  pass
+    #  pass
+     
+    #  p_dj_wi_tk = np.array(p.map(_compute_e, args))
+    #  print("To sparse...")
+    #  p_dj_wi_tk = sp.csr_matrix(p_dj_wi_tk)
+    #  print("Stacking...")
+    #  p_dj_wi_tk = np.vstack(p_dj_wi_tk)
+
+    #  p_dj_wi_tk = []
+    #  for j in tqdm(args):
+        #  p___wi_tk = sp.csr_matrix(_compute_e(j))
+        #  p_dj_wi_tk.append(p___wi_tk)
+        #  sp.save_npz('../save/e_step%d_%d.npz' %(step, j), p___wi_tk)
+    #  pass
+
+    #  print("Saving...")
+    #  for i, m in tqdm(enumerate(p_dj_wi_tk)):
+        #  sp.save_npz('../save/e_step%d_%d.npz' %(step, i), m)
+    #  pass
+    #  sp.save_npz('../save/e_step%d.npz' %step, p_dj_wi_tk)
+
+    p_dj_wi_tk = _compute_e()
+    return p_dj_wi_tk
+pass
+
+#  def _compute_m_1(k):
+    #  for i in range(num_term):
+        #  p_tk_wi[k, i] = sum([c_wi_dj[i, j] * p_dj_wi_tk[j, i, k] for j in range(num_doc) if c_wi_dj[i, j] > 0])
+    #  pass
+    #  p_tk_wi[k] /= sum(p_tk_wi[k])
+    #  return p_tk_wi[k].tolist()
+#  pass
+
+@nb.njit
+def _compute_m_1():
+    p_tk_wi = np.zeros((NUM_TOPIC, num_term), dtype=DTYPE)
+    for k in range(NUM_TOPIC):
+        for i in range(num_term):
+            p_tk_wi[k, i] = np.sum(np.array([c_wi_dj[i, j] * p_dj_wi_tk[j, i, k] for j in range(num_doc) if c_wi_dj[i, j] > 0]))
+            #  p_tk_wi[k, i] = p_dj_wi_tk[0, i, k]
+            #  a = p_dj_wi_tk[0, i, k]
+        pass
+        p_tk_wi[k] /= np.sum(p_tk_wi[k])
+    pass
+    return p_tk_wi
+pass
+
+def compute_m_1(step):
+    print("M_1 step%d..." %step, datetime.now().strftime("%H:%M:%S"))
+    #  global p_tk_wi
+    #  p_dj_wi_tk = np.load("../save/e_step1.npy")
+    #  c_wi_dj = np.load("../save/c.npy")
+    # with Pool(cpu_count()) as p:
+    #     args = [k for k in range(NUM_TOPIC)]
+    #     #  for _ in tqdm(p.imap_unordered(_compute_m_1, args), total=len(args)):
+    #         #  pass
+    #     #  pass
+    #     p_tk_wi = np.array(p.map(_compute_m_1, args))
+    # pass
+    #  np.save("../save/m_1_step%d" %step, p_tk_wi)
+    p_tk_wi = _compute_m_1()
+    return p_tk_wi
+pass
+
+#  def _compute_m_2(j):
+    #  len_dj = len(doc_list[j])
+    #  for k in range(NUM_TOPIC):
+        #  p_dj_tk[j, k] = sum([c_wi_dj[i, j] * p_dj_wi_tk[j, i, k] for i in range(num_term) if c_wi_dj[i, j] > 0]) / len_dj
+    #  pass
+    #  return p_dj_tk[j].tolist()
+#  pass
+
+@nb.njit
+def _compute_m_2():
+    p_dj_tk = np.zeros((num_doc, NUM_TOPIC), dtype=DTYPE)
+    for j in range(num_doc):
+        doc_len = len_dj[j]
+        for k in range(NUM_TOPIC):
+            p_dj_tk[j, k] = np.sum(np.array([c_wi_dj[i, j] * p_dj_wi_tk[j, i, k] for i in range(num_term) if c_wi_dj[i, j] > 0]))
+        pass
+        p_dj_tk[j] /= doc_len
+    pass
+    return p_dj_tk
+pass
+
+def compute_m_2(step):
+    print("M_2 step%d..." %step, datetime.now().strftime("%H:%M:%S"))
+    #  global p_dj_tk
+    #  p_dj_wi_tk = np.load("../save/e_step1.npy")
+    #  c_wi_dj = np.load("../save/c.npy")
+    # with Pool(cpu_count()) as p:
+    #     args = [j for j in range(num_doc)]
+    #     #  for _ in tqdm(p.imap_unordered(_compute_m_2, args), total=len(args)):
+    #         #  pass
+    #     #  pass
+    #     p_dj_tk = np.array(p.map(compute_m_2, args))
+    # pass
+    # np.save("../save/m_2_step%d" %step, p_dj_tk)
+    p_dj_tk = _compute_m_2()
+    return p_dj_tk
+pass
+
+def compute_p_bg_wi():
+    print("Building BG...", datetime.now().strftime("%H:%M:%S"))
+    #  c_wi_dj = np.load("../save/c.npy")
+    p_bg_wi = np.zeros(num_term)
+    mom = sum([len(doc) for doc in doc_list])
+    for i in tqdm(range(num_term)):
+        child = sum([c_wi_dj[i, j] for j in range(num_doc)])
+        p_bg_wi[i] = child / mom
+    pass
+    np.save("../save/p_bg_wi", p_bg_wi)
+    return p_bg_wi
+pass
+
+def compute_p_dj_wi():
+    print("Building unigram...", datetime.now().strftime("%H:%M:%S"))
+    #  c_wi_dj = np.load("../save/c.npy")
+    p_dj_wi = np.zeros([num_doc, num_term])
+    for j in tqdm(range(num_doc)):
+        doc_len = len(doc_list[j])
+        for i in range(num_term):
+            p_dj_wi[j, i] = c_wi_dj[i, j] / doc_len
+        pass
+    pass
+    np.save("../save/p_dj_wi", p_dj_wi)
+    return p_dj_wi
+pass
+
+def normalize(m, axis):
+    summ = m.sum(axis=axis, keepdims=True)
+    return  m / summ
+pass
+
+
+###############test#############
+#  a = np.arange(0,27,1).reshape(3,3,3)num_term
+#  print(a[1,:,1])
+#  a[2] = a[1]
+#  print(a)
+#  print(a)
+#  print(normalize(a, 2))
+
+#  p_dj_wi_tk = np.load("../save/e_step1.npy")
+#  normalize(p_dj_wi_tk, 2)
+#  print(p_dj_wi_tk.shape)
+
+
+
+#  exit()
+################################
+print("Start...", datetime.now().strftime("%H:%M:%S"))
 
 doc_filename_list, query_filename_list, doc_list, query_list = get_data(data_dir)
-dic = get_dictionary(doc_list)
+dic, term_to_i = get_dictionary(doc_list)
 num_doc = len(doc_list)
 num_term = len(dic)
-p_tk_wi = np.array([init_prob(num_term) for i in range(NUM_TOPIC)])
-p_dj_tk = np.array([init_prob(NUM_TOPIC) for i in range(num_doc)])
-print(cpu_count)
-compute_e(p_tk_wi, p_dj_tk, 1)
+len_dj = np.array([len(doc_list[j]) for j in range(num_doc)])
 
+#  c init
+try:
+    print("Loading c_wi_dj...")
+    c_wi_dj = sp.load_npz("../save/s_c.npz")
+except:
+    c_wi_dj = np.zeros([num_term, num_doc])
+    compute_c()
+
+# computing LMs
+try:
+    print("Loading p_bg_wi...")
+    p_bg_wi = sp.load_npz("../save/s_p_bg_wi.npz")
+    print("Loading p_dj_wi...")
+    p_dj_wi = sp.load_npz("../save/s_p_dj_wi.npz")
+except:
+    p_bg_wi = compute_p_bg_wi()
+    p_dj_wi = compute_p_dj_wi()
+
+c_wi_dj = c_wi_dj.toarray().astype(np.int8)
+
+
+# init
+if STEP == 0:
+    p_tk_wi = np.array([init_prob(num_term) for i in range(NUM_TOPIC)], dtype=np.float32)
+    p_dj_tk = np.array([init_prob(NUM_TOPIC) for i in range(num_doc)], dtype=np.float32)
+
+    #  p_dj_wi_tk = np.zeros([num_doc, num_term, NUM_TOPIC], dtype="float16")
+
+#load
+else:
+    p_tk_wi = sp.load_npz("../save/step %d_1.npz" %STEP)
+    p_dj_tk = sp.load_npz("../save/step %d_2.npz" %STEP)
+    p_tk_wi = p_tk_wi.todense()
+    p_dj_tk = p_dj_tk.todense()
+
+#  p_dj_wi_tk = np.load("../save/e_step1.npy")
+
+#  training
+p_dj_wi_tk = 0
+for step in range(STEP + 1,STEP + 1 + EPOCH):
+
+    p_dj_wi_tk = 0
+    p_dj_wi_tk = compute_e(step)
+
+
+    p_tk_wi = 0
+    p_dj_tk = 0
+    p_tk_wi = compute_m_1(step)
+    sp1 = sp.csr_matrix(p_tk_wi)
+    print("Saving... ")
+    sp.save_npz("../save/step %d_1" %step, sp1)
+    p_dj_tk = compute_m_2(step)
+    sp2 = sp.csr_matrix(p_dj_tk)
+    print("Saving... ")
+    sp.save_npz("../save/step %d_2" %step, sp2)
+
+pass
+
+
+#=============================================
 #  avg_doc_len = compute_avg_len(doc_list)
 #  tf_doc = compute_tf(dic, doc_list)
 #  tf_query = compute_tf(dic, query_list)
 #  n_list = compute_n(dic, doc_list)
 #  idf_list = compute_idf(N, n_list)
-#  result_list = compute_score_for_query(query_list)
-#  write_result(OUT_PATH, result_list)
+
+p_dj_wi_tk = 0
+p_bg_wi = p_bg_wi.todense().tolist()[0]
+d_dj_wi = p_dj_wi.todense()
+print(p_tk_wi.shape)
+print(p_dj_tk.shape)
+print(len(p_bg_wi))
+print(p_dj_wi.shape)
+
+if evaluate > 0:
+    result_list = compute_score_for_querys(query_list)
+    write_result(OUT_PATH, result_list)
