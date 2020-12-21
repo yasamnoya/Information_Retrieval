@@ -1,6 +1,9 @@
+*.pt
+*.json
 *.zip
 *.txt
 *.csv
 *.npy
 *.npz
-
+__pycache__/
+*.py[cod]
