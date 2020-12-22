@@ -5,18 +5,17 @@ from tqdm import tqdm
 from multiprocessing import Pool, cpu_count
 
 parser = argparse.ArgumentParser()
-parser.add_argument("-doc_path", type=str)
-parser.add_argument("-train_path", type=str)
-parser.add_argument("-test_path", type=str)
-parser.add_argument("-save_train_path", type=str)
-parser.add_argument("-save_test_path", type=str)
+parser.add_argument("-data_dir", type=str, default="../data/")
+parser.add_argument("-json_dir", type=str, default="../json/")
 args = parser.parse_args()
 
 
 def preprocess_set(df_doc, df_queries):
-    split_point = 500
-    pool_args = []
-    preprocessed_set = []
+    split_point = 250
+    pos_pool_args = []
+    neg_pool_args = []
+    pos_set = []
+    neg_set = []
 
     for _, row in df_queries.iterrows():
         query_text = row.query_text
@@ -24,17 +23,21 @@ def preprocess_set(df_doc, df_queries):
         pos_id_list = doc_id_list[:split_point]
         neg_id_list = doc_id_list[split_point:]
 
-        pool_args.append((df_doc, query_text, pos_id_list, float(1)))
-        pool_args.append((df_doc, query_text, neg_id_list, float(0)))
+        pos_pool_args.append((df_doc, query_text, pos_id_list, float(1)))
+        neg_pool_args.append((df_doc, query_text, neg_id_list, float(0)))
 
         # preprocessed_set += get_subset_of_query(df_doc, query_text, pos_id_list, float(1))
         # preprocessed_set += get_subset_of_query(df_doc, query_text, neg_id_list, float(0))
 
     with Pool(cpu_count()) as p:
-        for subset in tqdm(p.imap_unordered(get_subset_of_query, pool_args), total=len(pool_args)):
-            preprocessed_set += subset
+        for subset in tqdm(p.imap_unordered(get_subset_of_query, pos_pool_args), total=len(pos_pool_args)):
+            pos_set += subset
 
-    return preprocessed_set
+    with Pool(cpu_count()) as p:
+        for subset in tqdm(p.imap_unordered(get_subset_of_query, neg_pool_args), total=len(neg_pool_args)):
+            neg_set += subset
+
+    return pos_set, neg_set
 
 
 def get_subset_of_query(pool_args):  # is_pos = [1,0]
@@ -57,16 +60,19 @@ def get_subset_of_query(pool_args):  # is_pos = [1,0]
 
 if __name__ == "__main__":
     print("Loading...")
-    df_doc = pd.read_csv(args.doc_path)
-    df_train_queries = pd.read_csv(args.train_path)
-    df_test_queries = pd.read_csv(args.test_path)
+    df_doc = pd.read_csv(args.data_dir + "documents.csv")
+    df_train_queries = pd.read_csv(args.data_dir + "train_queries.csv")
+    df_test_queries = pd.read_csv(args.data_dir + "test_queries.csv")
 
     print("Preprocessing...")
-    train_set = preprocess_set(df_doc, df_train_queries)
-    with open(args.save_train_path, 'w') as train_file:
-        train_file.write(json.dumps(train_set))
+    train_pos_set, train_neg_set = preprocess_set(df_doc, df_train_queries)
+    with open(args.json_dir + "train.pos.json", 'w') as json_file:
+        json_file.write(json.dumps(train_pos_set))
+    with open(args.json_dir + "train.neg.json", 'w') as json_file:
+        json_file.write(json.dumps(train_neg_set))
 
-    test_set = preprocess_set(df_doc, df_test_queries)
-    with open(args.save_test_path, 'w') as test_file:
-        test_file.write(json.dumps(test_set))
-
+    test_pos_set, test_neg_set = preprocess_set(df_doc, df_test_queries)
+    with open(args.json_dir + "test.pos.json", 'w') as json_file:
+        json_file.write(json.dumps(test_pos_set))
+    with open(args.json_dir + "test.neg.json", 'w') as json_file:
+        json_file.write(json.dumps(test_neg_set))
