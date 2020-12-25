@@ -1,26 +1,24 @@
 import json
+import math
 import torch
 import argparse
-from transformers import AutoTokenizer
+from transformers import RobertaTokenizerFast
 from multiprocessing import Pool, cpu_count
 from tqdm import tqdm
 
 
 def tokenizing_worker(pool_args):
-<<<<<<< HEAD
-    tokenizer = XLNetTokenizerFast.from_pretrained("xlnet-base-cased")
-=======
-    tokenizer = AutoTokenizer.from_pretrained("xlnet-base-cased")
->>>>>>> a59386f381238df26389687cfbda5d57ae32ddc7
+    tokenizer = RobertaTokenizerFast.from_pretrained("roberta-base")
     json_data_chunk = pool_args
     doc_text_chunk = [i['doc_text'] for i in json_data_chunk]
     query_text_chunk = [i['query_text'] for i in json_data_chunk]
-    label_chunk = [i['tgt'] for i in json_data_chunk]
+    label_chunk = [i['label'] for i in json_data_chunk]
 
     encoding_dict = tokenizer(query_text_chunk, doc_text_chunk, padding='max_length',
-            truncation=True, max_length=1024)
+                              truncation=True, max_length=512)
     sub_dataset = [{"input_ids": encoding_dict["input_ids"][i],
-                    "token_type_ids": encoding_dict["token_type_ids"][i],
+                    # "token_type_ids": encoding_dict["token_type_ids"][i],
+                    "token_type_ids": [0] * 512,
                     "attention_mask": encoding_dict["attention_mask"][i],
                     "labels": label_chunk[i]} for i in range(len(label_chunk))]
 
@@ -32,39 +30,19 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("-from_dir", type=str, default="../json/")
     parser.add_argument("-save_dir", type=str, default="../bert_data/")
-<<<<<<< HEAD
-    parser.add_argument("-chunk_size", type=int, default=100000)
+    parser.add_argument("-num_splits", type=int, default=12)
     args = parser.parse_args()
 
-    for dataset_type in ["train", "test"]:
-        for pos_neg in ["pos", "neg"]:
-            with open(args.from_dir + f"{dataset_type}.{pos_neg}.json", 'r') as json_file:
-                json_data = json.loads(json_file.read())
-
-                json_data_chunks = [json_data[i:i+args.chunk_size]
-                                    for i in range(0, len(json_data), args.chunk_size)]
-
-                with Pool(cpu_count()) as p:
-                    pool_args = json_data_chunks
-                    i = 0
-                    for sub_dataset in tqdm(p.imap_unordered(tokenizing_worker, pool_args), total=len(pool_args)):
-                        torch.save(sub_dataset, f"{args.save_dir}{dataset_type}.{pos_neg}.{i}.pt")
-                        i += 1
-=======
-    parser.add_argument("-chunk_size", type=int, default=10000)
-    args = parser.parse_args()
-
-    for dataset_type in ["train", "test"]:
-        with open(args.from_dir + f"{dataset_type}.json", 'r') as json_file:
+    for pos_neg in ["pos", "neg"]:
+        with open(args.from_dir + f"train.{pos_neg}.json", 'r') as json_file:
             json_data = json.loads(json_file.read())
+            chunk_size = math.ceil(len(json_data) / (args.num_splits))
 
-            json_data_chunks = [json_data[i:i+args.chunk_size]
-                                for i in range(0, len(json_data), args.chunk_size)]
+            json_data_chunks = [json_data[i:i + chunk_size]
+                                for i in range(0, len(json_data), chunk_size)]
 
             with Pool(cpu_count()) as p:
                 pool_args = json_data_chunks
-                i = 0
-                for sub_dataset in tqdm(p.imap_unordered(tokenizing_worker, pool_args), total=len(pool_args)):
-                    torch.save(sub_dataset, f"{args.save_dir}{dataset_type}.{i}.pt")
-                    i += 1
->>>>>>> a59386f381238df26389687cfbda5d57ae32ddc7
+                for i, sub_dataset in tqdm(enumerate(p.imap_unordered(tokenizing_worker, pool_args)), total=len(pool_args)):
+                    torch.save(
+                            sub_dataset, f"{args.save_dir}train.{pos_neg}.{i}.pt")

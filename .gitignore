@@ -7,3 +7,4 @@
 *.npz
 __pycache__/
 *.py[cod]
+.vim/
