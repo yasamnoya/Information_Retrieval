@@ -2,23 +2,30 @@ import pandas as pd
 import random
 import argparse
 import json
+import os
 from tqdm import tqdm
 from multiprocessing import Pool, cpu_count
 
 
-def preprocess_set(df_doc, df_queries, split_point):
+def preprocess_set(df_doc, df_queries, split_point, mode):
     pos_pool_args = []
     neg_pool_args = []
+    pos_doc_id_list = []
+    neg_doc_id_list = []
     pos_set = []
     neg_set = []
 
     for _, row in df_queries.iterrows():
         query_text = row.query_text
-        pos_doc_id_list = row.pos_doc_ids.split(" ")
+        pos_doc_id_list += row.pos_doc_ids.split(" ")
         bm25_doc_id_list = row.bm25_top1000.split(" ")
-        pos_doc_id_list += bm25_doc_id_list[:split_point]
-        neg_doc_id_list = [
-            i for i in bm25_doc_id_list[split_point:] if i not in pos_doc_id_list]
+
+        if mode == "train":
+            pos_doc_id_list += bm25_doc_id_list[:split_point]
+            neg_doc_id_list += [
+                    i for i in bm25_doc_id_list[split_point:] if i not in pos_doc_id_list]
+
+
 
         pos_pool_args.append((df_doc, query_text, pos_doc_id_list, float(1)))
         neg_pool_args.append((df_doc, query_text, neg_doc_id_list, float(0)))
@@ -79,12 +86,23 @@ if __name__ == "__main__":
     print("Loading...")
     df_doc = pd.read_csv(args.data_dir + "documents.csv")
     df_train_queries = pd.read_csv(args.data_dir + "train_queries.csv")
+    df_valid_queries = pd.read_csv(args.data_dir + "valid_queries.csv")
     df_test_queries = pd.read_csv(args.data_dir + "test_queries.csv")
 
-    print("Preprocessing...")
-    train_pos_set, train_neg_set = preprocess_set(
-        df_doc, df_train_queries, args.split_point)
-    with open(args.json_dir + "train.pos.json", 'w') as json_file:
-        json_file.write(json.dumps(train_pos_set))
-    with open(args.json_dir + "train.neg.json", 'w') as json_file:
-        json_file.write(json.dumps(train_neg_set))
+    print("Preprocessing train...")
+    if not os.path.exists(args.json_dir + "train.pos.json"):
+        train_pos_set, train_neg_set = preprocess_set(
+            df_doc, df_train_queries, args.split_point, mode="train")
+        with open(args.json_dir + "train.pos.json", 'w') as json_file:
+            json_file.write(json.dumps(train_pos_set))
+        with open(args.json_dir + "train.neg.json", 'w') as json_file:
+            json_file.write(json.dumps(train_neg_set))
+
+    print("Preprocessing valid...")
+    if not os.path.exists(args.json_dir + "valid.pos.json"):
+        valid_pos_set, valid_neg_set = preprocess_set(
+            df_doc, df_valid_queries, args.split_point, mode="valid")
+        with open(args.json_dir + "valid.pos.json", 'w') as json_file:
+            json_file.write(json.dumps(valid_pos_set))
+        with open(args.json_dir + "valid.neg.json", 'w') as json_file:
+            json_file.write(json.dumps(valid_neg_set))

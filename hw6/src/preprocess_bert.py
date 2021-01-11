@@ -1,4 +1,5 @@
 import json
+import os
 import math
 import torch
 import argparse
@@ -33,16 +34,21 @@ if __name__ == "__main__":
     parser.add_argument("-num_splits", type=int, default=12)
     args = parser.parse_args()
 
-    for pos_neg in ["pos", "neg"]:
-        with open(args.from_dir + f"train.{pos_neg}.json", 'r') as json_file:
-            json_data = json.loads(json_file.read())
-            chunk_size = math.ceil(len(json_data) / (args.num_splits))
+    for mode in ["train", "valid"]:
+        if not os.path.exists(f"{args.save_dir}{mode}.pos.0.pt"):
+            print(f"Preprocessing {mode}...")
+            for pos_neg in ["pos", "neg"]:
+                with open(args.from_dir + f"{mode}.{pos_neg}.json", 'r') as json_file:
+                    json_data = json.loads(json_file.read())
+                    chunk_size = math.ceil(len(json_data) / (args.num_splits))
+                    if chunk_size == 0:
+                        continue
 
-            json_data_chunks = [json_data[i:i + chunk_size]
-                                for i in range(0, len(json_data), chunk_size)]
+                    json_data_chunks = [json_data[i:i + chunk_size]
+                                        for i in range(0, len(json_data), chunk_size)]
 
-            with Pool(cpu_count()) as p:
-                pool_args = json_data_chunks
-                for i, sub_dataset in tqdm(enumerate(p.imap_unordered(tokenizing_worker, pool_args)), total=len(pool_args)):
-                    torch.save(
-                            sub_dataset, f"{args.save_dir}train.{pos_neg}.{i}.pt")
+                    with Pool(cpu_count()) as p:
+                        pool_args = json_data_chunks
+                        for i, sub_dataset in tqdm(enumerate(p.imap_unordered(tokenizing_worker, pool_args)), total=len(pool_args)):
+                            torch.save(
+                                    sub_dataset, f"{args.save_dir}{mode}.{pos_neg}.{i}.pt")
