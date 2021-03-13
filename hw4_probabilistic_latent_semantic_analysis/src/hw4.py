@@ -64,17 +64,31 @@ def get_dictionary(dataset):
     print('Creating dictionary')
 
     dictionary = []
-    term_to_i = {}
     for doc in tqdm(dataset):
         dictionary += doc
     pass
     
     dictionary = list(dict.fromkeys(dictionary))
-    for i, term in enumerate(dictionary):
+
+    return dictionary
+pass
+
+def get_most_count_mask(dic, c, th):
+    mask = []
+    for i in reversed(range(len(dic))):
+        c_sum = np.sum(np.array(c[i]))
+        mask.append(c_sum >= th)
+    pass
+    return mask
+pass
+
+def get_term_to_i(dic):
+
+    term_to_i = {}
+    for i, term in enumerate(dic):
         term_to_i[term] = i
     pass
-
-    return dictionary, term_to_i
+    return term_to_i
 pass
 
 def compute_tf(dic, doc_list):
@@ -201,9 +215,10 @@ def compute_c():
         #  for _ in tqdm(p.imap_unordered(_compute_c, args), total=len(args)):
             #  pass
         #  pass
-        c_wi_dj = np.array(p.map(_compute_c, args))
+        c_wi_dj = np.ndarray(p.map(_compute_c, args))
     pass
-    np.save("../save/c", c_wi_dj)
+    #  np.save("../save/c", c_wi_dj)
+    return c_wi_dj
 pass
 
 def _compute_c(i):
@@ -230,7 +245,7 @@ pass
 #     return p___wi_tk
 # pass
 
-@nb.njit
+@nb.njit(parallel=True)
 def _compute_e():
     p_dj_wi_tk = np.zeros((num_doc, num_term, NUM_TOPIC), dtype=DTYPE)
     for j in range(num_doc):
@@ -282,7 +297,7 @@ pass
     #  return p_tk_wi[k].tolist()
 #  pass
 
-@nb.njit
+@nb.njit(parallel=True)
 def _compute_m_1():
     p_tk_wi = np.zeros((NUM_TOPIC, num_term), dtype=DTYPE)
     for k in range(NUM_TOPIC):
@@ -321,7 +336,7 @@ pass
     #  return p_dj_tk[j].tolist()
 #  pass
 
-@nb.njit
+@nb.njit(parallel=True)
 def _compute_m_2():
     p_dj_tk = np.zeros((num_doc, NUM_TOPIC), dtype=DTYPE)
     for j in range(num_doc):
@@ -351,30 +366,45 @@ def compute_m_2(step):
     return p_dj_tk
 pass
 
-def compute_p_bg_wi():
-    print("Building BG...", datetime.now().strftime("%H:%M:%S"))
+def compute_p_bg_wi(c_wi_dj, doc_list):
+    mom = np.sum(np.array([len(doc) for doc in doc_list]))
+    return _compute_p_bg_wi(c_wi_dj, mom)
+pass
+
+@nb.njit(parallel=True)
+def _compute_p_bg_wi(c_wi_dj, mom):
+    #  print("Building BG...", datetime.now().strftime("%H:%M:%S"))
     #  c_wi_dj = np.load("../save/c.npy")
-    p_bg_wi = np.zeros(num_term)
-    mom = sum([len(doc) for doc in doc_list])
-    for i in tqdm(range(num_term)):
-        child = sum([c_wi_dj[i, j] for j in range(num_doc)])
+    p_bg_wi = np.zeros(num_term, dtype=DTYPE)
+    #  mom = 0
+    #  for doc in doc_list:
+        #  mom += len(doc)
+    #  pass
+    #  mom = np.sum(np.array([len(doc) for doc in doc_list]))
+    for i in range(num_term):
+        child = np.sum(c_wi_dj[i])
         p_bg_wi[i] = child / mom
     pass
-    np.save("../save/p_bg_wi", p_bg_wi)
+    #  np.save("../save/p_bg_wi", p_bg_wi)
     return p_bg_wi
 pass
 
-def compute_p_dj_wi():
-    print("Building unigram...", datetime.now().strftime("%H:%M:%S"))
+def compute_p_dj_wi(c_wi_dj, doc_list):
+    doc_len_list = np.array([len(doc) for doc in doc_list])
+    return _compute_p_dj_wi(c_wi_dj, doc_len_list)
+pass
+
+@nb.njit(parallel=True)
+def _compute_p_dj_wi(c_wi_dj, doc_len_list):
+    #  print("Building unigram...", datetime.now().strftime("%H:%M:%S"))
     #  c_wi_dj = np.load("../save/c.npy")
-    p_dj_wi = np.zeros([num_doc, num_term])
-    for j in tqdm(range(num_doc)):
-        doc_len = len(doc_list[j])
+    p_dj_wi = np.zeros((num_doc, num_term), dtype=DTYPE)
+    for j in range(num_doc):
         for i in range(num_term):
-            p_dj_wi[j, i] = c_wi_dj[i, j] / doc_len
+            p_dj_wi[j, i] = c_wi_dj[i, j] / doc_len_list[j]
         pass
     pass
-    np.save("../save/p_dj_wi", p_dj_wi)
+    #  np.save("../save/p_dj_wi", p_dj_wi)
     return p_dj_wi
 pass
 
@@ -403,30 +433,36 @@ pass
 print("Start...", datetime.now().strftime("%H:%M:%S"))
 
 doc_filename_list, query_filename_list, doc_list, query_list = get_data(data_dir)
-dic, term_to_i = get_dictionary(doc_list)
-num_doc = len(doc_list)
-num_term = len(dic)
-len_dj = np.array([len(doc_list[j]) for j in range(num_doc)])
+dic = get_dictionary(doc_list)
 
 #  c init
 try:
     print("Loading c_wi_dj...")
-    c_wi_dj = sp.load_npz("../save/s_c.npz")
+    c_wi_dj = sp.load_npz("../save/s_c.npz").todense()
 except:
     c_wi_dj = np.zeros([num_term, num_doc])
     compute_c()
 
+mask = get_most_count_mask(dic, c_wi_dj,  1)
+c_wi_dj = np.vstack([c_wi_dj[i] for i in range(len(dic)) if mask[i]])
+dic = [dic[i] for i in range(len(dic)) if mask[i]]
+print(len(dic))
+term_to_i = get_term_to_i(dic)
+num_doc = len(doc_list)
+num_term = len(dic)
+len_dj = np.array([len(doc_list[j]) for j in range(num_doc)])
+
 # computing LMs
 try:
+    raise 'skip'
     print("Loading p_bg_wi...")
     p_bg_wi = sp.load_npz("../save/s_p_bg_wi.npz")
     print("Loading p_dj_wi...")
     p_dj_wi = sp.load_npz("../save/s_p_dj_wi.npz")
 except:
-    p_bg_wi = compute_p_bg_wi()
-    p_dj_wi = compute_p_dj_wi()
+    p_bg_wi = compute_p_bg_wi(c_wi_dj, doc_list)
+    p_dj_wi = compute_p_dj_wi(c_wi_dj, doc_list)
 
-c_wi_dj = c_wi_dj.toarray().astype(np.int8)
 
 
 # init
@@ -459,6 +495,7 @@ for step in range(STEP + 1,STEP + 1 + EPOCH):
     sp1 = sp.csr_matrix(p_tk_wi)
     print("Saving... ")
     sp.save_npz("../save/step %d_1" %step, sp1)
+
     p_dj_tk = compute_m_2(step)
     sp2 = sp.csr_matrix(p_dj_tk)
     print("Saving... ")
@@ -475,8 +512,8 @@ pass
 #  idf_list = compute_idf(N, n_list)
 
 p_dj_wi_tk = 0
-p_bg_wi = p_bg_wi.todense().tolist()[0]
-d_dj_wi = p_dj_wi.todense()
+#  p_bg_wi = p_bg_wi.todense().tolist()[0]
+#  d_dj_wi = p_dj_wi.todense()
 print(p_tk_wi.shape)
 print(p_dj_tk.shape)
 print(len(p_bg_wi))
